@@ -122,6 +122,16 @@ func (nb *BridgeBuilder) FindOrCreateEndpoint(nw *Network, ep *Endpoint) error {
 		return err
 	}
 
+	// Enable IPv6 in the target network namespace
+	err = targetNetNS.Run(func() error {
+		err := nb.enableIpv6ForNetworkNamespace()
+		return err
+	})
+	if err != nil {
+		log.Errorf("Failed to setup IPv6 for target netns: %v.", err)
+		return err
+	}
+
 	// Connect the bridge to the target network namespace with a veth pair.
 	err = nb.createVethPair(nw.BridgeIndex, targetNetNS, vethLinkName, vethPeerName)
 	if err != nil {
@@ -936,5 +946,40 @@ func (nb *BridgeBuilder) setupTapLink(linkName string, tapLinkName string, uid i
 		return err
 	}
 
+	return nil
+}
+
+// enableIpv6ForNetworkNamespace sets the /proc/sys/net/ipv6/conf/all/disable_ipv6 file to 0.
+// This is because even though the host network namespace has IPv6 enabled, the container
+// network namespace that Docker creates does not enable IPv6 unless you pass the right
+// value to the --sysctl flag while executing a `docker run`. The command is below
+// docker run --sysctl net.ipv6.conf.all.disable_ipv6=0 ...
+func (nb *BridgeBuilder) enableIpv6ForNetworkNamespace() error {
+	// Ideally, modifying /proc/sys/net from within a network namespace will only change
+	// it for the current network namespace, rather than the host network namespace.
+	// If we want, we can also use the go-sysctl library here but in the interest
+	// of not pulling in more code for this PoC, we're just going to manually write the file
+
+	disableIPv6Path := "/proc/sys/net/ipv6/conf/all/disable_ipv6"
+
+	// print the contents of the file if it exists
+	if _, err := os.Stat(disableIPv6Path); err == nil {
+
+		contents, err := os.ReadFile(disableIPv6Path)
+		if err != nil {
+			log.Errorf("Failed to read file to enable ipv6, error - %v", err)
+			return err
+		}
+		log.Infof("Contents of %s - %s", disableIPv6Path, contents)
+	}
+
+	log.Infof("Enabling IPv6 in the network namespace.")
+
+	// write a 0 to the disable_ipv6 file in the network namespace
+	err := os.WriteFile(disableIPv6Path, []byte{'0'}, 0644)
+	if err != nil {
+		log.Errorf("Failed to write to file to enable ipv6, error - %v", err)
+		return err
+	}
 	return nil
 }
